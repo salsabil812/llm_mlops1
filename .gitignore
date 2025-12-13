@@ -1,9 +1,30 @@
-# Data (handled later by DVC)
-data/
-models/
-reports/
+# =========================
+# Data (tracked by DVC)
+# =========================
+data/**
 
+# But keep DVC metafiles inside data
+!data/**/*.dvc
+!data/**/.gitkeep
+
+# If you use DVC pipelines later
+!dvc.yaml
+!dvc.lock
+
+# =========================
+# Outputs (choose one strategy)
+# =========================
+# Option A: track models/reports with DVC too (recommended later)
+models/**
+reports/**
+!models/**/*.dvc
+!reports/**/*.dvc
+!models/**/.gitkeep
+!reports/**/.gitkeep
+
+# =========================
 # Python
+# =========================
 __pycache__/
 *.pyc
 *.pyo
@@ -12,9 +33,13 @@ __pycache__/
 .venv
 venv/
 
+# =========================
 # Jupyter
+# =========================
 .ipynb_checkpoints/
 
+# =========================
 # OS
+# =========================
 .DS_Store
 Thumbs.db
