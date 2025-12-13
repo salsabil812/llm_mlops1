@@ -1,20 +1,12 @@
-# =========================
-# Data (tracked by DVC)
-# =========================
-data/**
+# Ignore raw/processed data files (big)
+data/**/*.csv
+data/**/*.parquet
+data/**/*.jsonl
+data/**/*.txt
 
-# Allow folders so we can re-include files
-!data/
-!data/**/
-
-# Keep DVC metafiles
+# But keep DVC metafiles
 !data/**/*.dvc
 !data/**/.gitkeep
-
-# If you use DVC pipelines later
-!dvc.yaml
-!dvc.lock
-
 
 # =========================
 # Outputs (choose one strategy)
