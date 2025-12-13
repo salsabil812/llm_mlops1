@@ -3,13 +3,18 @@
 # =========================
 data/**
 
-# But keep DVC metafiles inside data
+# Allow folders so we can re-include files
+!data/
+!data/**/
+
+# Keep DVC metafiles
 !data/**/*.dvc
 !data/**/.gitkeep
 
 # If you use DVC pipelines later
 !dvc.yaml
 !dvc.lock
+
 
 # =========================
 # Outputs (choose one strategy)
