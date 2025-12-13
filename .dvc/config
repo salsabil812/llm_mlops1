@@ -1,4 +1,4 @@
 [core]
     remote = dagshub
 ['remote "dagshub"']
-    url = https://dagshub.com/salsa/llm-mlops1.dvc
+    url = https://dagshub.com/salsabil812/llm_mlops1.dvc
