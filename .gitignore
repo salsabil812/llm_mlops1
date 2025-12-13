@@ -1,42 +1,32 @@
-# Ignore raw/processed data files (big)
-data/**/*.csv
-data/**/*.parquet
-data/**/*.jsonl
-data/**/*.txt
+# =========================
+# Data (DVC)
+# =========================
 
-# But keep DVC metafiles
+# Ignore everything under data
+data/**
+
+# Re-allow directories so git can reach the .dvc files
+!data/
+!data/**/
+
+# Keep DVC metafiles
 !data/**/*.dvc
 !data/**/.gitkeep
 
 # =========================
-# Outputs (choose one strategy)
+# DVC files
 # =========================
-# Option A: track models/reports with DVC too (recommended later)
-models/**
-reports/**
-!models/**/*.dvc
-!reports/**/*.dvc
-!models/**/.gitkeep
-!reports/**/.gitkeep
+!dvc.yaml
+!dvc.lock
 
 # =========================
-# Python
+# Python / Jupyter / OS
 # =========================
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
-.env
-.venv
-venv/
-
-# =========================
-# Jupyter
-# =========================
 .ipynb_checkpoints/
-
-# =========================
-# OS
-# =========================
+.env
+.venv/
+venv/
 .DS_Store
 Thumbs.db
