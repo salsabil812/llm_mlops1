@@ -1,0 +1,53 @@
+stages:
+  prepare:
+    cmd: python src/prepare.py \
+      --in data/raw/train.csv \
+      --out data/processed/mini_train.csv \
+      --out_val data/processed/mini_val.csv
+    deps:
+      - src/prepare.py
+      - data/raw/train.csv
+    outs:
+      - data/processed/mini_train.csv
+      - data/processed/mini_val.csv
+
+  train:
+    cmd: python src/train.py \
+      --train_csv data/processed/mini_train.csv \
+      --val_csv data/processed/mini_val.csv \
+      --skip_cross \
+      --fast_ci \
+      --max_steps 30 \
+      --clf_model_name prajjwal1/bert-tiny \
+      --max_length 64 \
+      --clf_epochs 1
+    deps:
+      - src/train.py
+      - data/processed/mini_train.csv
+      - data/processed/mini_val.csv
+    outs:
+      - models/transformer_classifier
+    metrics:
+      - metrics/train_metrics.json
+
+  evaluate:
+    cmd: python src/evaluate.py \
+      --model_dir models/transformer_classifier \
+      --val_csv data/processed/mini_val.csv \
+      --out metrics/scores.json
+    deps:
+      - src/evaluate.py
+      - models/transformer_classifier
+      - data/processed/mini_val.csv
+    outs:
+      - metrics/scores.json
+    metrics:
+      - metrics/scores.json
+
+  promote:
+    cmd: python src/promote.py \
+      --model_name llm-mlops-classifier \
+      --metric_tag metric_f1 \
+      --stage Production
+    deps:
+      - src/promote.py

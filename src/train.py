@@ -3,6 +3,7 @@ import argparse
 import json
 import math
 import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -15,100 +16,8 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer, Trai
 from datasets import Dataset
 
 import mlflow
+from mlflow.tracking import MlflowClient
 
-#log_mlflow
-def log_transformer_registry_ready(model_dir: Path, max_length: int = 256):
-    import mlflow.pyfunc
-    import numpy as np
-    import pandas as pd
-    import torch
-    from transformers import AutoTokenizer, AutoModelForSequenceClassification
-
-    class HFClassifierPyfunc(mlflow.pyfunc.PythonModel):
-        def load_context(self, context):
-            self.tokenizer = AutoTokenizer.from_pretrained(context.artifacts["hf_dir"])
-            self.model = AutoModelForSequenceClassification.from_pretrained(context.artifacts["hf_dir"])
-            self.model.eval()
-            self.max_length = int(context.model_config.get("max_length", 256))
-
-        def predict(self, context, model_input):
-            # Accept DataFrame with 'text' OR prompt/response
-            if isinstance(model_input, pd.DataFrame):
-                if "text" in model_input.columns:
-                    texts = model_input["text"].fillna("").astype(str).tolist()
-                elif "prompt" in model_input.columns and "response" in model_input.columns:
-                    texts = (
-                        "PROMPT: " + model_input["prompt"].fillna("").astype(str)
-                        + " RESPONSE: " + model_input["response"].fillna("").astype(str)
-                    ).tolist()
-                else:
-                    texts = model_input.iloc[:, 0].fillna("").astype(str).tolist()
-            else:
-                texts = [str(x) for x in model_input]
-
-            probs = []
-            bs = 8
-            with torch.no_grad():
-                for i in range(0, len(texts), bs):
-                    batch = texts[i:i+bs]
-                    inputs = self.tokenizer(
-                        batch,
-                        return_tensors="pt",
-                        truncation=True,
-                        max_length=self.max_length,
-                        padding=True,
-                    )
-                    logits = self.model(**inputs).logits
-                    p = torch.softmax(logits, dim=-1)[:, 1].cpu().numpy()
-                    probs.append(p)
-
-            return np.concatenate(probs)
-
-    mlflow.pyfunc.log_model(
-        artifact_path="model",               # IMPORTANT: standard path
-        python_model=HFClassifierPyfunc(),
-        artifacts={"hf_dir": str(model_dir)},
-        model_config={"max_length": int(max_length)},
-        pip_requirements=["mlflow", "torch", "transformers", "numpy", "pandas"],
-    )
-
-def log_crossencoder_registry_ready(model_dir: Path):
-    import mlflow.pyfunc
-    import numpy as np
-    import pandas as pd
-    from sentence_transformers import CrossEncoder
-
-    class CrossEncoderPyfunc(mlflow.pyfunc.PythonModel):
-        def load_context(self, context):
-            self.ce = CrossEncoder(context.artifacts["ce_dir"], num_labels=1)
-
-        def predict(self, context, model_input):
-            # Accept DataFrame with prompt/response or 2 columns
-            if isinstance(model_input, pd.DataFrame):
-                if "prompt" in model_input.columns and "response" in model_input.columns:
-                    pairs = list(zip(
-                        model_input["prompt"].fillna("").astype(str).tolist(),
-                        model_input["response"].fillna("").astype(str).tolist(),
-                    ))
-                else:
-                    cols = list(model_input.columns)
-                    pairs = list(zip(
-                        model_input[cols[0]].fillna("").astype(str).tolist(),
-                        model_input[cols[1]].fillna("").astype(str).tolist(),
-                    ))
-            else:
-                arr = np.asarray(model_input)
-                pairs = list(zip(arr[:, 0].astype(str), arr[:, 1].astype(str)))
-
-            scores = self.ce.predict(pairs)
-            return np.asarray(scores)
-
-    mlflow.pyfunc.log_model(
-        artifact_path="model",
-        python_model=CrossEncoderPyfunc(),
-        artifacts={"ce_dir": str(model_dir)},
-        pip_requirements=["mlflow", "sentence-transformers", "numpy", "pandas"],
-    )
 
 # -------------------------
 # ENV / UTILS
@@ -134,17 +43,36 @@ def _clean_text_cols(df: pd.DataFrame):
     return df
 
 
+def build_hf_dataset(df: pd.DataFrame):
+    df = df.copy()
+    df["prompt"] = df["prompt"].fillna("").astype(str)
+    df["response"] = df["response"].fillna("").astype(str)
+    df["label"] = pd.to_numeric(df["label"], errors="coerce").fillna(0).astype(int)
+
+    texts = ("PROMPT: " + df["prompt"] + " RESPONSE: " + df["response"]).tolist()
+    labels = df["label"].tolist()
+    return Dataset.from_dict({"text": texts, "label": labels})
+
+
 # -------------------------
-# CROSS ENCODER
+# CROSS ENCODER (OPTIONAL)
 # -------------------------
 def train_cross_encoder(
     train_df, val_df, out_dir: Path,
-    model_name: str, batch_size: int, epochs: int
+    model_name: str, batch_size: int, epochs: int,
+    fast_ci: bool = False,
 ):
+    """
+    Pour deadline/CI: conseille de le SKIP.
+    Si tu l'actives: on coupe dur en fast_ci (epochs=1) mais ça peut rester lent sur CPU.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
 
     train_df = _clean_text_cols(train_df)
     val_df = _clean_text_cols(val_df)
+
+    if fast_ci:
+        epochs = 1
 
     train_samples = [
         InputExample(texts=[r.prompt, r.response], label=float(r.label))
@@ -160,7 +88,7 @@ def train_cross_encoder(
         collate_fn=cross_encoder.smart_batching_collate,
     )
 
-    total_steps = math.ceil(len(train_samples) / batch_size) * epochs
+    total_steps = max(1, math.ceil(len(train_samples) / batch_size) * epochs)
     warmup_steps = int(0.1 * total_steps)
 
     cross_encoder.fit(
@@ -178,38 +106,21 @@ def train_cross_encoder(
     val_preds = (val_scores >= 0.5).astype(int)
 
     metrics = {
-        "acc": float(accuracy_score(val_labels, val_preds)),
-        "f1": float(f1_score(val_labels, val_preds)),
+        "cross_acc": float(accuracy_score(val_labels, val_preds)),
+        "cross_f1": float(f1_score(val_labels, val_preds)),
     }
     try:
-        metrics["roc_auc"] = float(roc_auc_score(val_labels, val_scores))
+        metrics["cross_roc_auc"] = float(roc_auc_score(val_labels, val_scores))
     except Exception:
-        metrics["roc_auc"] = None
+        metrics["cross_roc_auc"] = None
 
     cross_encoder.save(str(out_dir))
-    log_crossencoder_registry_ready(out_dir)
-    (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    Path("metrics").mkdir(exist_ok=True)
+    (Path("metrics") / "train_metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
 
     print("✅ Cross-Encoder saved to:", out_dir)
     print("📊 Cross-Encoder metrics:", metrics)
-
     return metrics
-
-
-# -------------------------
-# HF DATASET
-# -------------------------
-def build_hf_dataset(df: pd.DataFrame):
-    df = df.copy()
-    df["prompt"] = df["prompt"].fillna("").astype(str)
-    df["response"] = df["response"].fillna("").astype(str)
-    df["label"] = pd.to_numeric(df["label"], errors="coerce").fillna(0).astype(int)
-
-    texts = ("PROMPT: " + df["prompt"] + " RESPONSE: " + df["response"]).tolist()
-    labels = df["label"].tolist()
-
-    return Dataset.from_dict({"text": texts, "label": labels})
-
 
 
 # -------------------------
@@ -218,7 +129,10 @@ def build_hf_dataset(df: pd.DataFrame):
 def train_transformer_classifier(
     train_df, val_df, out_dir: Path,
     model_name: str, max_length: int,
-    lr: float, bs_train: int, bs_eval: int, epochs: int
+    lr: float, bs_train: int, bs_eval: int,
+    epochs: int,
+    fast_ci: bool = False,
+    max_steps: int = -1,
 ):
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -233,12 +147,11 @@ def train_transformer_classifier(
             batch["text"],
             truncation=True,
             max_length=max_length,
-            padding="max_length",
+            padding=True,  # ✅ plus léger que padding="max_length"
         )
 
     train_tokenized = train_dataset.map(tokenize_fn, batched=True).remove_columns(["text"])
     val_tokenized = val_dataset.map(tokenize_fn, batched=True).remove_columns(["text"])
-
     train_tokenized.set_format("torch")
     val_tokenized.set_format("torch")
 
@@ -250,19 +163,27 @@ def train_transformer_classifier(
             "f1": float(f1_score(labels, preds)),
         }
 
+    # 🔥 Deadline: fast_ci force un entraînement court
+    if fast_ci:
+        epochs = 1
+        if max_steps <= 0:
+            max_steps = 30  # ✅ garanti < 5 min
+
     args = TrainingArguments(
         output_dir=str(out_dir / "runs"),
-        eval_strategy="epoch",
-        save_strategy="epoch",
+        eval_strategy="no" if fast_ci else "epoch",
+        save_strategy="no" if fast_ci else "epoch",
         learning_rate=lr,
         per_device_train_batch_size=bs_train,
         per_device_eval_batch_size=bs_eval,
         num_train_epochs=epochs,
+        max_steps=max_steps,  # ✅ coupe dur
         weight_decay=0.01,
-        load_best_model_at_end=True,
+        load_best_model_at_end=False if fast_ci else True,
         metric_for_best_model="f1",
-        logging_steps=50,
+        logging_steps=5 if fast_ci else 50,
         report_to="none",
+        fp16=False,  # CPU friendly
     )
 
     trainer = Trainer(
@@ -275,21 +196,67 @@ def train_transformer_classifier(
     )
 
     trainer.train()
-    eval_metrics = trainer.evaluate()
+    eval_metrics = trainer.evaluate() if not fast_ci else {}
 
     trainer.save_model(str(out_dir))
     tokenizer.save_pretrained(str(out_dir))
-    # Log a registry-ready MLflow model (with MLmodel)
-    log_transformer_registry_ready(out_dir, max_length=max_length)
 
-    (out_dir / "metrics.json").write_text(
-        json.dumps(eval_metrics, indent=2), encoding="utf-8"
-    )
+    # On calcule au moins les metrics sur val même en fast_ci
+    if fast_ci:
+        preds = trainer.predict(val_tokenized)
+        m = compute_metrics((preds.predictions, preds.label_ids))
+        eval_metrics = {f"eval_{k}": v for k, v in m.items()}
+    else:
+        # trainer.evaluate() renvoie souvent eval_accuracy / eval_f1 déjà
+        eval_metrics = {k: (float(v) if isinstance(v, (int, float, np.number)) else v) for k, v in eval_metrics.items()}
+
+    (out_dir / "metrics.json").write_text(json.dumps(eval_metrics, indent=2), encoding="utf-8")
 
     print("✅ Transformer classifier saved to:", out_dir)
     print("📊 Transformer metrics:", eval_metrics)
-
     return eval_metrics
+
+
+# -------------------------
+# MLflow: Register from run artifacts (FAST)
+# -------------------------
+def register_hf_artifact_as_model(
+    registered_name: str,
+    artifact_subpath: str,
+    tags: dict,
+    wait_ready: bool = True,
+    wait_seconds: int = 60,
+):
+    """
+    Enregistre dans MLflow Model Registry à partir des artefacts du run:
+    model_uri = runs:/<run_id>/<artifact_subpath>
+    -> Évite mlflow.pyfunc.log_model() (lent sur Windows).
+    """
+    client = MlflowClient()
+    run = mlflow.active_run()
+    if run is None:
+        raise RuntimeError("No active MLflow run found for registration.")
+
+    run_id = run.info.run_id
+    model_uri = f"runs:/{run_id}/{artifact_subpath}"
+
+    mv = mlflow.register_model(model_uri=model_uri, name=registered_name)
+
+    if wait_ready:
+        for _ in range(wait_seconds):
+            m = client.get_model_version(name=registered_name, version=mv.version)
+            if str(m.status).upper() == "READY":
+                break
+            time.sleep(1)
+
+    # tags sur la version
+    for k, v in (tags or {}).items():
+        if v is None:
+            continue
+        client.set_model_version_tag(registered_name, mv.version, str(k), str(v))
+
+    print(f"✅ Registered model: {registered_name} v{mv.version} from {model_uri}")
+    return {"name": registered_name, "version": int(mv.version), "run_id": run_id, "model_uri": model_uri}
 
 
 # -------------------------
@@ -297,12 +264,10 @@ def train_transformer_classifier(
 # -------------------------
 def main():
     set_env_no_wandb()
-    # Disable any hidden autologgers that may log params twice
     try:
         mlflow.autolog(disable=True)
     except Exception:
         pass
-
 
     parser = argparse.ArgumentParser()
 
@@ -321,11 +286,17 @@ def main():
 
     # Classifier
     parser.add_argument("--clf_model_name", type=str, default="distilbert-base-uncased")
-    parser.add_argument("--max_length", type=int, default=256)
+    parser.add_argument("--max_length", type=int, default=128)
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--bs_train", type=int, default=8)
     parser.add_argument("--bs_eval", type=int, default=16)
     parser.add_argument("--clf_epochs", type=int, default=2)
+
+    # Deadline / CI controls
+    parser.add_argument("--fast_ci", action="store_true", help="Make training finish fast (for DVC/Jenkins)")
+    parser.add_argument("--max_steps", type=int, default=-1, help="Hard cap on steps (fast_ci default=30)")
+    parser.add_argument("--register_name", type=str, default="llm-mlops-classifier",
+                        help="MLflow Registered Model name for classifier")
 
     args = parser.parse_args()
 
@@ -341,7 +312,7 @@ def main():
     mlflow.set_experiment(args.experiment)
 
     # -------------------------
-    # RUN 1: CROSS ENCODER
+    # RUN 1: CROSS ENCODER (OPTIONAL)
     # -------------------------
     if not args.skip_cross:
         with mlflow.start_run(run_name=args.run_name + "_cross"):
@@ -349,6 +320,7 @@ def main():
                 "cross_model_name": args.cross_model_name,
                 "cross_batch_size": args.cross_batch_size,
                 "cross_epochs": args.cross_epochs,
+                "fast_ci": args.fast_ci,
             })
 
             cross_metrics = train_cross_encoder(
@@ -358,6 +330,7 @@ def main():
                 model_name=args.cross_model_name,
                 batch_size=args.cross_batch_size,
                 epochs=args.cross_epochs,
+                fast_ci=args.fast_ci,
             )
 
             for k, v in cross_metrics.items():
@@ -367,7 +340,7 @@ def main():
             mlflow.log_artifacts(str(models_dir / "cross_encoder"), artifact_path="cross_encoder")
 
     # -------------------------
-    # RUN 2: CLASSIFIER
+    # RUN 2: CLASSIFIER + REGISTER
     # -------------------------
     with mlflow.start_run(run_name=args.run_name + "_classifier"):
         mlflow.log_params({
@@ -377,6 +350,8 @@ def main():
             "bs_train": args.bs_train,
             "bs_eval": args.bs_eval,
             "clf_epochs": args.clf_epochs,
+            "fast_ci": args.fast_ci,
+            "max_steps": args.max_steps,
         })
 
         clf_metrics = train_transformer_classifier(
@@ -389,15 +364,34 @@ def main():
             bs_train=args.bs_train,
             bs_eval=args.bs_eval,
             epochs=args.clf_epochs,
+            fast_ci=args.fast_ci,
+            max_steps=args.max_steps,
         )
 
+        # log metrics to MLflow
         for k, v in clf_metrics.items():
-            if isinstance(v, (int, float)):
+            if isinstance(v, (int, float, np.number)):
                 mlflow.log_metric(k, float(v))
 
-        mlflow.log_artifacts(
-            str(models_dir / "transformer_classifier"),
-            artifact_path="transformer_classifier",
+        # log HF folder as run artifacts
+        mlflow.log_artifacts(str(models_dir / "transformer_classifier"), artifact_path="hf_model")
+
+        # ✅ Register FAST (no pyfunc)
+        f1 = clf_metrics.get("eval_f1") or clf_metrics.get("f1") or ""
+        acc = clf_metrics.get("eval_accuracy") or clf_metrics.get("accuracy") or ""
+
+        register_hf_artifact_as_model(
+            registered_name=args.register_name,
+            artifact_subpath="hf_model",
+            tags={
+                "metric_f1": f1,
+                "metric_accuracy": acc,
+                "clf_model_name": args.clf_model_name,
+                "max_length": args.max_length,
+                "fast_ci": args.fast_ci,
+            },
+            wait_ready=True,
+            wait_seconds=60,
         )
 
 
