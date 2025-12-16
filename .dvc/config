@@ -1,4 +1,12 @@
 [core]
-    remote = dagshub
+    remote = origin
 ['remote "dagshub"']
     url = https://dagshub.com/salsabil812/llm_mlops1.dvc
+    connect_timeout = 600
+    read_timeout = 0
+['remote "origin"']
+    url = s3://dvc
+    endpointurl = https://dagshub.com/salsabil812/llm_mlops1.s3
+    region = us-east-1
+    connect_timeout = 600
+    read_timeout = 600
