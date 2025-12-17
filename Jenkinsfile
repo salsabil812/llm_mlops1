@@ -22,22 +22,23 @@ pipeline {
 
     stage('Python & venv') {
       steps {
-        powershell '''
-          $ErrorActionPreference = "Stop"
-          python -V
+        sh '''
+          set -e
+          python3 -V
 
-          if (!(Test-Path ".venv")) { python -m venv .venv }
+          if [ ! -d ".venv" ]; then
+            python3 -m venv .venv
+          fi
 
-          # Upgrade pip inside venv
-          .\\.venv\\Scripts\\python -m pip install --upgrade pip
+          . .venv/bin/activate
 
-          # Install deps
-          if (Test-Path "requirements.txt") {
-            .\\.venv\\Scripts\\pip install -r requirements.txt
-          } else {
-            # Fallback minimal deps
-            .\\.venv\\Scripts\\pip install dvc mlflow pandas numpy scikit-learn torch transformers sentence-transformers
-          }
+          pip install --upgrade pip
+
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install dvc mlflow pandas numpy scikit-learn torch transformers sentence-transformers
+          fi
         '''
       }
     }
@@ -48,18 +49,16 @@ pipeline {
           string(credentialsId: 'DAGSHUB_USER', variable: 'DAGSHUB_USER'),
           string(credentialsId: 'DAGSHUB_TOKEN', variable: 'DAGSHUB_TOKEN')
         ]) {
-          powershell '''
-            $ErrorActionPreference = "Stop"
+          sh '''
+            set -e
 
-            # MLflow auth (DAGsHub uses basic auth style)
-            $env:MLFLOW_TRACKING_USERNAME = $env:DAGSHUB_USER
-            $env:MLFLOW_TRACKING_PASSWORD = $env:DAGSHUB_TOKEN
+            export MLFLOW_TRACKING_USERNAME=$DAGSHUB_USER
+            export MLFLOW_TRACKING_PASSWORD=$DAGSHUB_TOKEN
 
-            # Optionally used by some DVC remotes / scripts
-            $env:DAGSHUB_USERNAME = $env:DAGSHUB_USER
-            $env:DAGSHUB_PASSWORD = $env:DAGSHUB_TOKEN
+            export DAGSHUB_USERNAME=$DAGSHUB_USER
+            export DAGSHUB_PASSWORD=$DAGSHUB_TOKEN
 
-            echo "✅ Credentials loaded (values are masked by Jenkins)."
+            echo "✅ Credentials loaded (masked by Jenkins)"
           '''
         }
       }
@@ -67,23 +66,21 @@ pipeline {
 
     stage('DVC pull') {
       steps {
-        powershell '''
-          $ErrorActionPreference = "Stop"
-          .\\.venv\\Scripts\\dvc --version
-
-          # Pull data/artifacts tracked by DVC
-          .\\.venv\\Scripts\\dvc pull -v
+        sh '''
+          set -e
+          . .venv/bin/activate
+          dvc --version
+          dvc pull -v
         '''
       }
     }
 
     stage('Pipeline to Staging') {
       steps {
-        powershell '''
-          $ErrorActionPreference = "Stop"
-
-          # Run until Staging promotion
-          .\\.venv\\Scripts\\dvc repro -f prepare train evaluate deepchecks_gate promote_staging
+        sh '''
+          set -e
+          . .venv/bin/activate
+          dvc repro -f prepare train evaluate deepchecks_gate promote_staging
         '''
       }
     }
@@ -91,11 +88,12 @@ pipeline {
     stage('Promote to Production (manual approval)') {
       steps {
         script {
-          input message: 'Deepchecks PASSED. Promote model to Production (and archive old Production)?', ok: 'Promote'
+          input message: 'Deepchecks PASSED. Promote model to Production ?', ok: 'Promote'
         }
-        powershell '''
-          $ErrorActionPreference = "Stop"
-          .\\.venv\\Scripts\\dvc repro -f promote_production
+        sh '''
+          set -e
+          . .venv/bin/activate
+          dvc repro -f promote_production
         '''
       }
     }
@@ -103,15 +101,22 @@ pipeline {
 
   post {
     always {
-      powershell '''
-        if (Test-Path "metrics\\scores.json") { echo "---- metrics/scores.json ----"; type metrics\\scores.json }
-        if (Test-Path "metrics\\deepchecks.json") { echo "---- metrics/deepchecks.json ----"; type metrics\\deepchecks.json }
+      sh '''
+        if [ -f metrics/scores.json ]; then
+          echo "---- metrics/scores.json ----"
+          cat metrics/scores.json
+        fi
+
+        if [ -f metrics/deepchecks.json ]; then
+          echo "---- metrics/deepchecks.json ----"
+          cat metrics/deepchecks.json
+        fi
       '''
       archiveArtifacts artifacts: 'metrics/*.json', fingerprint: true
     }
 
     failure {
-      echo "❌ Pipeline failed. Check console output above (DVC stage that failed will be shown)."
+      echo "❌ Pipeline failed. Check logs above."
     }
   }
 }
