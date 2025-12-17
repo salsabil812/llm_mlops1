@@ -15,7 +15,7 @@ stages:
       --val_csv data/processed/mini_val.csv
       --skip_cross
       --fast_ci
-      --max_steps 30
+      --max_steps 80
       --clf_model_name prajjwal1/bert-tiny
       --max_length 64
       --clf_epochs 1
@@ -53,14 +53,15 @@ stages:
     metrics:
       - metrics/deepchecks.json
 
-  promote_staging:
-    cmd: python src/promote.py --model_name llm_transformer_classifier --metric_tag metric_f1 --stage Staging
+  promote_auto:
+    cmd: >
+      python src/promote.py
+      --mode auto
+      --model_name llm_transformer_classifier
+      --metric_tag metric_f1
+      --candidate latest
+      --archive_old_production
     deps:
       - src/promote.py
       - metrics/scores.json
-
-  promote_production:
-    cmd: python src/promote.py --model_name llm_transformer_classifier --metric_tag metric_f1 --stage Production --archive_old_production
-    deps:
-      - src/promote.py
-      - metrics/scores.json
+      - metrics/deepchecks.json

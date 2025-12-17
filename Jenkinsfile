@@ -1,5 +1,3 @@
-
-
 pipeline {
   agent any
 
@@ -8,7 +6,6 @@ pipeline {
   }
 
   environment {
-    // DAGsHub MLflow tracking
     MLFLOW_TRACKING_URI = "https://dagshub.com/salsabil812/llm_mlops1.mlflow"
     PYTHONUTF8 = "1"
     PIP_DISABLE_PIP_VERSION_CHECK = "1"
@@ -26,15 +23,14 @@ pipeline {
       steps {
         sh '''
           set -e
-          python3 -V
+          python3 --version
 
           if [ ! -d ".venv" ]; then
             python3 -m venv .venv
           fi
 
           . .venv/bin/activate
-
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
 
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
@@ -54,11 +50,11 @@ pipeline {
           sh '''
             set -e
 
-            export MLFLOW_TRACKING_USERNAME=$DAGSHUB_USER
-            export MLFLOW_TRACKING_PASSWORD=$DAGSHUB_TOKEN
+            export MLFLOW_TRACKING_USERNAME="$DAGSHUB_USER"
+            export MLFLOW_TRACKING_PASSWORD="$DAGSHUB_TOKEN"
 
-            export DAGSHUB_USERNAME=$DAGSHUB_USER
-            export DAGSHUB_PASSWORD=$DAGSHUB_TOKEN
+            export DAGSHUB_USERNAME="$DAGSHUB_USER"
+            export DAGSHUB_PASSWORD="$DAGSHUB_TOKEN"
 
             echo "✅ Credentials loaded (masked by Jenkins)"
           '''
@@ -77,25 +73,14 @@ pipeline {
       }
     }
 
-    stage('Pipeline to Staging') {
+    stage('Train + Evaluate + Gate + Auto Promote') {
       steps {
         sh '''
           set -e
           . .venv/bin/activate
-          dvc repro -f prepare train evaluate deepchecks_gate promote_staging
-        '''
-      }
-    }
 
-    stage('Promote to Production (manual approval)') {
-      steps {
-        script {
-          input message: 'Deepchecks PASSED. Promote model to Production ?', ok: 'Promote'
-        }
-        sh '''
-          set -e
-          . .venv/bin/activate
-          dvc repro -f promote_production
+          # Full pipeline with policy-based promotion
+          dvc repro -f prepare train evaluate deepchecks_gate promote_auto
         '''
       }
     }
@@ -118,7 +103,7 @@ pipeline {
     }
 
     failure {
-      echo "❌ Pipeline failed. Check logs above."
+      echo "❌ Pipeline failed. Check the DVC stage shown above."
     }
   }
 }

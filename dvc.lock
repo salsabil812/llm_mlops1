@@ -23,7 +23,7 @@ stages:
       size: 577300
   train:
     cmd: "python src/train.py --train_csv data/processed/mini_train.csv --val_csv
-      data/processed/mini_val.csv --skip_cross --fast_ci --max_steps 30 --clf_model_name
+      data/processed/mini_val.csv --skip_cross --fast_ci --max_steps 80 --clf_model_name
       prajjwal1/bert-tiny --max_length 64 --clf_epochs 1\n"
     deps:
     - path: data/processed/mini_train.csv
@@ -41,12 +41,12 @@ stages:
     outs:
     - path: metrics/train_metrics.json
       hash: md5
-      md5: cc670722a4558e08cb886942052434f8
-      size: 77
+      md5: b69375c14b24633419b9557b97b67fe8
+      size: 78
     - path: models/transformer_classifier
       hash: md5
-      md5: 36f766dc0c8c4323d0315aff7f9c60cf.dir
-      size: 18500544
+      md5: 1ad6be28ec4e540595c8729b33e1f4b2.dir
+      size: 18500545
       nfiles: 8
   evaluate:
     cmd: python src/evaluate.py --model_dir models/transformer_classifier 
@@ -58,8 +58,8 @@ stages:
       size: 577300
     - path: models/transformer_classifier
       hash: md5
-      md5: 36f766dc0c8c4323d0315aff7f9c60cf.dir
-      size: 18500544
+      md5: 1ad6be28ec4e540595c8729b33e1f4b2.dir
+      size: 18500545
       nfiles: 8
     - path: src/evaluate.py
       hash: md5
@@ -68,8 +68,8 @@ stages:
     outs:
     - path: metrics/scores.json
       hash: md5
-      md5: 3c4af90c826944694f6bd09ef36dd229
-      size: 355
+      md5: ad529e4e59e90d4185e1d6a5136154f6
+      size: 356
   promote:
     cmd: python src/promote.py --model_name llm_transformer_classifier 
       --metric_tag metric_f1 --stage Production
@@ -89,12 +89,12 @@ stages:
       size: 577300
     - path: metrics/scores.json
       hash: md5
-      md5: 3c4af90c826944694f6bd09ef36dd229
-      size: 355
+      md5: ad529e4e59e90d4185e1d6a5136154f6
+      size: 356
     - path: models/transformer_classifier
       hash: md5
-      md5: 36f766dc0c8c4323d0315aff7f9c60cf.dir
-      size: 18500544
+      md5: 1ad6be28ec4e540595c8729b33e1f4b2.dir
+      size: 18500545
       nfiles: 8
     - path: src/deepchecks_gate.py
       hash: md5
@@ -103,7 +103,7 @@ stages:
     outs:
     - path: metrics/deepchecks.json
       hash: md5
-      md5: 2f0dd443a5f31ba8976b30057bc390a2
+      md5: 92989e6d11a34774525a848369d06ac0
       size: 439
   promote_staging:
     cmd: python src/promote.py --model_name llm_transformer_classifier 
@@ -129,3 +129,19 @@ stages:
       hash: md5
       md5: 600591276117e710345584085d771969
       size: 5345
+  promote_auto:
+    cmd: "python src/promote.py --mode auto --model_name llm_transformer_classifier
+      --metric_tag metric_f1 --candidate latest --archive_old_production\n"
+    deps:
+    - path: metrics/deepchecks.json
+      hash: md5
+      md5: 92989e6d11a34774525a848369d06ac0
+      size: 439
+    - path: metrics/scores.json
+      hash: md5
+      md5: ad529e4e59e90d4185e1d6a5136154f6
+      size: 356
+    - path: src/promote.py
+      hash: md5
+      md5: 8d817212d54ef083c9db6625a5b8be70
+      size: 5293
