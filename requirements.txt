@@ -1,0 +1,44 @@
+# =========================
+# Core Python / Data
+# =========================
+numpy>=1.26
+pandas>=2.1
+scikit-learn>=1.3
+tqdm>=4.66
+
+# =========================
+# NLP / Transformers (CPU)
+# =========================
+transformers>=4.41
+tokenizers>=0.19
+sentence-transformers>=3.0
+
+# CPU-only PyTorch
+torch>=2.2
+
+# =========================
+# Hugging Face ecosystem
+# =========================
+datasets>=2.18
+accelerate>=0.30
+safetensors>=0.4
+
+# =========================
+# MLOps / Experiment tracking
+# =========================
+mlflow>=2.12
+dvc>=3.48
+dvc-http>=2.32
+
+# DAGsHub helper (optional but useful)
+dagshub>=0.3.30
+
+# =========================
+# IO / Serialization
+# =========================
+pyarrow>=15.0
+
+# =========================
+# Utils / Env
+# =========================
+python-dotenv>=1.0
