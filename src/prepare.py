@@ -1,16 +1,11 @@
 # src/prepare.py
-import os
-import re
-import ast
-import argparse
+import os, re, ast, argparse
 import pandas as pd
-
+from sklearn.model_selection import train_test_split
 
 TEXT_COLS = ["prompt", "response_a", "response_b"]
 
-
 def clean_text_field(x):
-    # handles: list, string that looks like ["a","b"], normal strings, NaN
     if isinstance(x, list):
         return " ".join([str(t) for t in x])
     if isinstance(x, str):
@@ -27,94 +22,55 @@ def clean_text_field(x):
         return ""
     return str(x)
 
-
 def remove_surrogates(text: str) -> str:
-    # remove invalid unicode surrogate chars that can crash pyarrow/utf-8
     if not isinstance(text, str):
         text = str(text)
     return re.sub(r"[\ud800-\udfff]", "", text)
 
-
-def compute_winner(row):
-    # returns: 1 if A won, 0 if B won, -1 if tie/unknown
-    if row.get("winner_model_a", 0) == 1:
-        return 1
-    if row.get("winner_model_b", 0) == 1:
-        return 0
-    if row.get("winner_tie", 0) == 1:
-        return -1
-    return -1
-
-
 def build_pairwise(df: pd.DataFrame) -> pd.DataFrame:
+    # plus rapide que iterrows sur gros df (mais ok aussi si petit)
     rows = []
     for _, r in df.iterrows():
-        rows.append(
-            {
-                "prompt": r["prompt"],
-                "response": r["response_a"],
-                "label": 1 if r.get("winner_model_a", 0) == 1 else 0,
-            }
-        )
-        rows.append(
-            {
-                "prompt": r["prompt"],
-                "response": r["response_b"],
-                "label": 1 if r.get("winner_model_b", 0) == 1 else 0,
-            }
-        )
+        rows.append({"prompt": r["prompt"], "response": r["response_a"], "label": 1 if r.get("winner_model_a", 0) == 1 else 0})
+        rows.append({"prompt": r["prompt"], "response": r["response_b"], "label": 1 if r.get("winner_model_b", 0) == 1 else 0})
     return pd.DataFrame(rows)
 
-
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--input", default="data/raw/train.csv")
-    parser.add_argument("--output", default="data/processed/pairwise.csv")
-    parser.add_argument("--max_prompt_chars", type=int, default=600)
-    parser.add_argument("--max_response_chars", type=int, default=1200)
-    args = parser.parse_args()
-
-    if not os.path.exists(args.input):
-        raise FileNotFoundError(f"Input not found: {args.input}")
+    p = argparse.ArgumentParser()
+    p.add_argument("--in", dest="input", default="data/raw/train.csv")
+    p.add_argument("--out", dest="out_train", default="data/processed/mini_train.csv")
+    p.add_argument("--out_val", dest="out_val", default="data/processed/mini_val.csv")
+    p.add_argument("--sample_rows", type=int, default=2000)     # ✅ accélère tout
+    p.add_argument("--val_size", type=float, default=0.2)
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--max_prompt_chars", type=int, default=600)
+    p.add_argument("--max_response_chars", type=int, default=1200)
+    args = p.parse_args()
 
     df = pd.read_csv(args.input)
-    print("Raw shape:", df.shape)
+    if args.sample_rows > 0 and len(df) > args.sample_rows:
+        df = df.sample(args.sample_rows, random_state=args.seed).copy()
 
-    # Clean text columns
     for col in TEXT_COLS:
         if col in df.columns:
-            df[col] = (
-                df[col]
-                .fillna("")
-                .apply(clean_text_field)
-                .apply(remove_surrogates)
-            )
+            df[col] = df[col].fillna("").apply(clean_text_field).apply(remove_surrogates)
 
-    # Build target + filter ties
-    df["winner"] = df.apply(compute_winner, axis=1)
-    df = df[df["winner"] != -1].copy()
-    print("After removing ties:", df.shape)
-    print("Winner distribution:\n", df["winner"].value_counts(normalize=True))
+    # remove ties/unknown if columns exist
+    if {"winner_model_a","winner_model_b","winner_tie"}.issubset(df.columns):
+        df = df[(df["winner_tie"] != 1)].copy()
 
-    # Build pairwise dataset
     pair_df = build_pairwise(df)
 
-    # Safety sanitize
-    pair_df["prompt"] = pair_df["prompt"].astype(str).apply(remove_surrogates)
-    pair_df["response"] = pair_df["response"].astype(str).apply(remove_surrogates)
+    pair_df["prompt"] = pair_df["prompt"].astype(str).apply(remove_surrogates).str.slice(0, args.max_prompt_chars)
+    pair_df["response"] = pair_df["response"].astype(str).apply(remove_surrogates).str.slice(0, args.max_response_chars)
 
-    # Truncate BEFORE saving
-    pair_df["prompt"] = pair_df["prompt"].str.slice(0, args.max_prompt_chars)
-    pair_df["response"] = pair_df["response"].str.slice(0, args.max_response_chars)
+    train_df, val_df = train_test_split(pair_df, test_size=args.val_size, random_state=args.seed, stratify=pair_df["label"])
 
-    print("Pairwise shape:", pair_df.shape)
-    print("Label distribution:\n", pair_df["label"].value_counts(normalize=True))
-
-    # Save
-    os.makedirs(os.path.dirname(args.output), exist_ok=True)
-    pair_df.to_csv(args.output, index=False, encoding="utf-8")
-    print("✅ Saved:", args.output)
-
+    os.makedirs(os.path.dirname(args.out_train), exist_ok=True)
+    os.makedirs(os.path.dirname(args.out_val), exist_ok=True)
+    train_df.to_csv(args.out_train, index=False, encoding="utf-8")
+    val_df.to_csv(args.out_val, index=False, encoding="utf-8")
+    print("✅ Saved:", args.out_train, args.out_val)
 
 if __name__ == "__main__":
     main()

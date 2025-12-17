@@ -1,9 +1,6 @@
 stages:
   prepare:
-    cmd: python src/prepare.py \
-      --in data/raw/train.csv \
-      --out data/processed/mini_train.csv \
-      --out_val data/processed/mini_val.csv
+    cmd: python src/prepare.py --in data/raw/train.csv --out data/processed/mini_train.csv --out_val data/processed/mini_val.csv
     deps:
       - src/prepare.py
       - data/raw/train.csv
@@ -12,14 +9,15 @@ stages:
       - data/processed/mini_val.csv
 
   train:
-    cmd: python src/train.py \
-      --train_csv data/processed/mini_train.csv \
-      --val_csv data/processed/mini_val.csv \
-      --skip_cross \
-      --fast_ci \
-      --max_steps 30 \
-      --clf_model_name prajjwal1/bert-tiny \
-      --max_length 64 \
+    cmd: >
+      python src/train.py
+      --train_csv data/processed/mini_train.csv
+      --val_csv data/processed/mini_val.csv
+      --skip_cross
+      --fast_ci
+      --max_steps 30
+      --clf_model_name prajjwal1/bert-tiny
+      --max_length 64
       --clf_epochs 1
     deps:
       - src/train.py
@@ -31,23 +29,38 @@ stages:
       - metrics/train_metrics.json
 
   evaluate:
-    cmd: python src/evaluate.py \
-      --model_dir models/transformer_classifier \
-      --val_csv data/processed/mini_val.csv \
-      --out metrics/scores.json
+    cmd: python src/evaluate.py --model_dir models/transformer_classifier --val_csv data/processed/mini_val.csv --out metrics/scores.json
     deps:
       - src/evaluate.py
       - models/transformer_classifier
       - data/processed/mini_val.csv
-    outs:
-      - metrics/scores.json
     metrics:
       - metrics/scores.json
 
-  promote:
-    cmd: python src/promote.py \
-      --model_name llm-mlops-classifier \
-      --metric_tag metric_f1 \
-      --stage Production
+  deepchecks_gate:
+    cmd: >
+      python src/deepchecks_gate.py
+      --model_dir models/transformer_classifier
+      --val_csv data/processed/mini_val.csv
+      --scores metrics/scores.json
+      --out metrics/deepchecks.json
+      --min_f1 0.60
+    deps:
+      - src/deepchecks_gate.py
+      - models/transformer_classifier
+      - data/processed/mini_val.csv
+      - metrics/scores.json
+    metrics:
+      - metrics/deepchecks.json
+
+  promote_staging:
+    cmd: python src/promote.py --model_name llm_transformer_classifier --metric_tag metric_f1 --stage Staging
     deps:
       - src/promote.py
+      - metrics/scores.json
+
+  promote_production:
+    cmd: python src/promote.py --model_name llm_transformer_classifier --metric_tag metric_f1 --stage Production --archive_old_production
+    deps:
+      - src/promote.py
+      - metrics/scores.json

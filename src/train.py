@@ -5,7 +5,6 @@ import math
 import os
 import time
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
@@ -17,7 +16,8 @@ from datasets import Dataset
 
 import mlflow
 from mlflow.tracking import MlflowClient
-
+from mlflow import pyfunc
+from mlflow import transformers as mlt
 
 # -------------------------
 # ENV / UTILS
@@ -214,7 +214,7 @@ def train_transformer_classifier(
 
     print("✅ Transformer classifier saved to:", out_dir)
     print("📊 Transformer metrics:", eval_metrics)
-    return eval_metrics
+    return eval_metrics, model, tokenizer
 
 
 # -------------------------
@@ -259,9 +259,9 @@ def register_hf_artifact_as_model(
     return {"name": registered_name, "version": int(mv.version), "run_id": run_id, "model_uri": model_uri}
 
 
-# -------------------------
+# =========================
 # MAIN
-# -------------------------
+# =========================
 def main():
     set_env_no_wandb()
     try:
@@ -269,10 +269,13 @@ def main():
     except Exception:
         pass
 
+    # -------------------------
+    # ARGUMENTS
+    # -------------------------
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--train_csv", type=str, default="data/processed/pairwise_train.csv")
-    parser.add_argument("--val_csv", type=str, default="data/processed/pairwise_val.csv")
+    parser.add_argument("--train_csv", type=str, required=True)
+    parser.add_argument("--val_csv", type=str, required=True)
     parser.add_argument("--models_dir", type=str, default="models")
 
     parser.add_argument("--experiment", type=str, default="llm-mlops")
@@ -281,39 +284,39 @@ def main():
     # Cross Encoder
     parser.add_argument("--cross_model_name", type=str, default="cross-encoder/ms-marco-MiniLM-L-6-v2")
     parser.add_argument("--cross_batch_size", type=int, default=16)
-    parser.add_argument("--cross_epochs", type=int, default=2)
-    parser.add_argument("--skip_cross", action="store_true", help="Skip cross-encoder training")
+    parser.add_argument("--cross_epochs", type=int, default=1)
+    parser.add_argument("--skip_cross", action="store_true")
 
-    # Classifier
-    parser.add_argument("--clf_model_name", type=str, default="distilbert-base-uncased")
-    parser.add_argument("--max_length", type=int, default=128)
+    # Transformer classifier
+    parser.add_argument("--clf_model_name", type=str, default="prajjwal1/bert-tiny")
+    parser.add_argument("--max_length", type=int, default=64)
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--bs_train", type=int, default=8)
     parser.add_argument("--bs_eval", type=int, default=16)
-    parser.add_argument("--clf_epochs", type=int, default=2)
+    parser.add_argument("--clf_epochs", type=int, default=1)
 
-    # Deadline / CI controls
-    parser.add_argument("--fast_ci", action="store_true", help="Make training finish fast (for DVC/Jenkins)")
-    parser.add_argument("--max_steps", type=int, default=-1, help="Hard cap on steps (fast_ci default=30)")
-    parser.add_argument("--register_name", type=str, default="llm-mlops-classifier",
-                        help="MLflow Registered Model name for classifier")
+    parser.add_argument("--fast_ci", action="store_true")
+    parser.add_argument("--max_steps", type=int, default=30)
 
     args = parser.parse_args()
 
+    # -------------------------
+    # DATA
+    # -------------------------
     train_df = pd.read_csv(args.train_csv)
     val_df = pd.read_csv(args.val_csv)
-
-    _validate_df(train_df, "train_df")
-    _validate_df(val_df, "val_df")
 
     models_dir = Path(args.models_dir)
     models_dir.mkdir(parents=True, exist_ok=True)
 
     mlflow.set_experiment(args.experiment)
 
-    # -------------------------
-    # RUN 1: CROSS ENCODER (OPTIONAL)
-    # -------------------------
+    registered_name = "llm_transformer_classifier"
+    client = MlflowClient()
+
+    # ============================================================
+    # RUN 1: CROSS ENCODER (OPTIONAL) + LOG + REGISTER
+    # ============================================================
     if not args.skip_cross:
         with mlflow.start_run(run_name=args.run_name + "_cross"):
             mlflow.log_params({
@@ -337,11 +340,47 @@ def main():
                 if v is not None:
                     mlflow.log_metric(k, float(v))
 
-            mlflow.log_artifacts(str(models_dir / "cross_encoder"), artifact_path="cross_encoder")
+            cross_f1 = cross_metrics.get("eval_f1") or cross_metrics.get("f1")
+            cross_acc = cross_metrics.get("eval_accuracy") or cross_metrics.get("accuracy")
 
-    # -------------------------
-    # RUN 2: CLASSIFIER + REGISTER
-    # -------------------------
+            # --- log as MLflow Model (pyfunc) ---
+            from sentence_transformers import CrossEncoder
+
+            ce_dir = str(models_dir / "cross_encoder")
+
+            class CrossEncoderPyfunc(mlflow.pyfunc.PythonModel):
+                def load_context(self, context):
+                    self.model = CrossEncoder(context.artifacts["ce_dir"])
+
+                def predict(self, context, model_input):
+                    pairs = list(zip(
+                        model_input.iloc[:, 0].astype(str),
+                        model_input.iloc[:, 1].astype(str),
+                    ))
+                    return np.asarray(self.model.predict(pairs))
+
+            mlflow.pyfunc.log_model(
+                artifact_path="ce_model",
+                python_model=CrossEncoderPyfunc(),
+                artifacts={"ce_dir": ce_dir},
+                registered_model_name=registered_name,
+            )
+
+            run_id = mlflow.active_run().info.run_id
+            versions = client.search_model_versions(f"name='{registered_name}'")
+            mv = max([v for v in versions if v.run_id == run_id], key=lambda v: int(v.version))
+
+            if cross_f1 is not None:
+                client.set_model_version_tag(registered_name, mv.version, "metric_f1", str(float(cross_f1)))
+            if cross_acc is not None:
+                client.set_model_version_tag(registered_name, mv.version, "metric_accuracy", str(float(cross_acc)))
+            client.set_model_version_tag(registered_name, mv.version, "model_type", "cross_encoder")
+
+            print(f"✅ Registered CROSS_ENCODER v{mv.version} (f1={cross_f1})")
+
+    # ============================================================
+    # RUN 2: TRANSFORMER CLASSIFIER + LOG + REGISTER
+    # ============================================================
     with mlflow.start_run(run_name=args.run_name + "_classifier"):
         mlflow.log_params({
             "clf_model_name": args.clf_model_name,
@@ -354,7 +393,7 @@ def main():
             "max_steps": args.max_steps,
         })
 
-        clf_metrics = train_transformer_classifier(
+        clf_metrics, model, tokenizer = train_transformer_classifier(
             train_df=train_df,
             val_df=val_df,
             out_dir=models_dir / "transformer_classifier",
@@ -368,32 +407,52 @@ def main():
             max_steps=args.max_steps,
         )
 
-        # log metrics to MLflow
         for k, v in clf_metrics.items():
-            if isinstance(v, (int, float, np.number)):
+            if isinstance(v, (int, float)):
                 mlflow.log_metric(k, float(v))
 
-        # log HF folder as run artifacts
-        mlflow.log_artifacts(str(models_dir / "transformer_classifier"), artifact_path="hf_model")
+        f1 = clf_metrics.get("eval_f1")
+        acc = clf_metrics.get("eval_accuracy")
+        # --------------------------------------------------
+# WRITE TRAIN METRICS FOR DVC
+# --------------------------------------------------
 
-        # ✅ Register FAST (no pyfunc)
-        f1 = clf_metrics.get("eval_f1") or clf_metrics.get("f1") or ""
-        acc = clf_metrics.get("eval_accuracy") or clf_metrics.get("accuracy") or ""
 
-        register_hf_artifact_as_model(
-            registered_name=args.register_name,
-            artifact_subpath="hf_model",
-            tags={
-                "metric_f1": f1,
-                "metric_accuracy": acc,
-                "clf_model_name": args.clf_model_name,
-                "max_length": args.max_length,
-                "fast_ci": args.fast_ci,
+        Path("metrics").mkdir(exist_ok=True)
+
+        Path("metrics/train_metrics.json").write_text(
+        json.dumps(
+            {
+                "eval_f1": float(f1) if f1 is not None else None,
+                "eval_accuracy": float(acc) if acc is not None else None,
             },
-            wait_ready=True,
-            wait_seconds=60,
+            indent=2,
+        ),
+        encoding="utf-8",
+        )
+        print("✅ Wrote metrics/train_metrics.json for DVC")
+
+
+        mlt.log_model(
+            transformers_model={"model": model, "tokenizer": tokenizer},
+            task="text-classification",
+            artifact_path="hf_model",
+            registered_model_name=registered_name,
         )
 
+        run_id = mlflow.active_run().info.run_id
+        versions = client.search_model_versions(f"name='{registered_name}'")
+        mv = max([v for v in versions if v.run_id == run_id], key=lambda v: int(v.version))
 
+        if f1 is not None:
+            client.set_model_version_tag(registered_name, mv.version, "metric_f1", str(float(f1)))
+        if acc is not None:
+            client.set_model_version_tag(registered_name, mv.version, "metric_accuracy", str(float(acc)))
+        client.set_model_version_tag(registered_name, mv.version, "model_type", "transformer")
+
+        print(f"✅ Registered TRANSFORMER v{mv.version} (f1={f1})")
+
+
+# =========================
 if __name__ == "__main__":
     main()

@@ -1,6 +1,8 @@
+# src/evaluate.py
 import argparse
 import os
 import time
+import json
 from pathlib import Path
 
 import numpy as np
@@ -24,6 +26,7 @@ def dir_size_mb(p: Path) -> float:
 
 
 def build_text(df: pd.DataFrame) -> list[str]:
+    # Backward compatible with your old binary format: prompt + response
     return (
         "PROMPT: " + df["prompt"].fillna("").astype(str)
         + " RESPONSE: " + df["response"].fillna("").astype(str)
@@ -75,7 +78,7 @@ def eval_transformer(df: pd.DataFrame, model_dir: Path, max_length: int, batch_s
     y_score = np.concatenate(probs)
     latency_ms = (dt / max(1, len(texts))) * 1000.0
 
-    best = threshold_search(y_true, y_score, steps=300)
+    best = threshold_search(y_true, y_score)
 
     try:
         auc = float(roc_auc_score(y_true, y_score))
@@ -101,7 +104,6 @@ def eval_cross_encoder(df: pd.DataFrame, model_dir: Path, batch_size: int):
 
     ce = CrossEncoder(str(model_dir), num_labels=1)
 
-    # predict in chunks
     scores = []
     t0 = time.perf_counter()
     for i in range(0, len(pairs), batch_size):
@@ -113,7 +115,7 @@ def eval_cross_encoder(df: pd.DataFrame, model_dir: Path, batch_size: int):
     y_score = np.concatenate(scores)
     latency_ms = (dt / max(1, len(pairs))) * 1000.0
 
-    best = threshold_search(y_true, y_score, steps=300)
+    best = threshold_search(y_true, y_score)
 
     try:
         auc = float(roc_auc_score(y_true, y_score))
@@ -126,66 +128,73 @@ def eval_cross_encoder(df: pd.DataFrame, model_dir: Path, batch_size: int):
     return best
 
 
+def _run_eval(args, df, model_dir):
+    if args.model_type == "transformer":
+        res = eval_transformer(df, model_dir, args.max_length, args.batch_size)
+    else:
+        res = eval_cross_encoder(df, model_dir, args.batch_size)
+
+    # Normalize keys to include a single "metric_f1" for selection in promote.py
+    out = dict(res)
+    out["metric_f1"] = float(res.get("eval_f1", 0.0))
+    out["metric_accuracy"] = float(res.get("eval_accuracy", 0.0)) if res.get("eval_accuracy") is not None else None
+    out["source_run_id"] = args.source_run_id
+
+    Path("metrics").mkdir(exist_ok=True)
+    Path(args.out).write_text(json.dumps(out, indent=2), encoding="utf-8")
+
+    print("✅ Evaluation done")
+    print(out)
+
+    # If running inside MLflow, log metrics/tags too
+    if mlflow.active_run() is not None:
+        mlflow.set_tag("stage", "evaluation")
+        if args.source_run_id:
+            mlflow.set_tag("source_run_id", args.source_run_id)
+
+        # log as metrics
+        mlflow.log_metric("metric_f1", out["metric_f1"])
+        if out["metric_accuracy"] is not None:
+            mlflow.log_metric("metric_accuracy", float(out["metric_accuracy"]))
+        if out.get("eval_auc") is not None:
+            mlflow.log_metric("metric_auc", float(out["eval_auc"]))
+
+        # also tag for quick lookup
+        mlflow.set_tag("metric_f1", str(out["metric_f1"]))
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model_type", choices=["transformer", "cross"], required=True)
 
-    ap.add_argument("--val_csv", default="data/processed/pairwise_val.csv")
+    ap.add_argument("--model_type", choices=["transformer", "cross"], default="transformer")
+    ap.add_argument("--source_run_id", default=None)
+
+    ap.add_argument("--val_csv", default="data/processed/mini_val.csv")
     ap.add_argument("--model_dir", required=True)
 
     ap.add_argument("--experiment", default="llm-mlops")
     ap.add_argument("--run_name", default=None)
 
-    # IMPORTANT: training run id that contains the artifact to register later
-    ap.add_argument("--source_run_id", required=True)
-
-    # transformer params
     ap.add_argument("--max_length", type=int, default=256)
     ap.add_argument("--batch_size", type=int, default=16)
+
+    ap.add_argument("--out", default="metrics/scores.json")
 
     args = ap.parse_args()
 
     df = pd.read_csv(args.val_csv)
-    for col in ["prompt", "response", "label"]:
-        if col not in df.columns:
-            raise ValueError(f"Missing column '{col}' in {args.val_csv}")
-
     model_dir = Path(args.model_dir)
-    if not model_dir.exists():
-        raise FileNotFoundError(f"Model dir not found: {model_dir}")
 
-    mlflow.set_experiment(args.experiment)
+    run_name = args.run_name or f"evaluate_{args.model_type}"
 
-    run_name = args.run_name
-    if run_name is None:
-        run_name = f"evaluate_{args.model_type}"
-
-    with mlflow.start_run(run_name=run_name):
-        mlflow.set_tag("stage", "evaluation")
-        mlflow.set_tag("source_run_id", args.source_run_id)
-
-        if args.model_type == "transformer":
-            mlflow.set_tag("model_type", "transformer_classifier")
-            res = eval_transformer(df, model_dir, args.max_length, args.batch_size)
-            mlflow.log_param("max_length", args.max_length)
-            mlflow.log_param("batch_size", args.batch_size)
-        else:
-            mlflow.set_tag("model_type", "cross_encoder")
-            res = eval_cross_encoder(df, model_dir, args.batch_size)
-            mlflow.log_param("batch_size", args.batch_size)
-
-        # Log comparable metrics (same keys for both)
-        mlflow.log_metric("eval_f1", res["eval_f1"])
-        mlflow.log_metric("eval_accuracy", res["eval_accuracy"])
-        mlflow.log_metric("best_threshold", res["best_threshold"])
-        if res["eval_auc"] is not None:
-            mlflow.log_metric("eval_auc", res["eval_auc"])
-
-        mlflow.log_metric("eval_latency_ms_per_sample", res["eval_latency_ms_per_sample"])
-        mlflow.log_metric("eval_model_size_mb", res["eval_model_size_mb"])
-
-        print("✅ Evaluation done")
-        print(res)
+    # If source_run_id provided => log evaluation in MLflow
+    if args.source_run_id:
+        mlflow.set_experiment(args.experiment)
+        with mlflow.start_run(run_name=run_name):
+            _run_eval(args, df, model_dir)
+    else:
+        # DVC-only
+        _run_eval(args, df, model_dir)
 
 
 if __name__ == "__main__":

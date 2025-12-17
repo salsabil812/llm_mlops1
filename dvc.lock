@@ -1,0 +1,131 @@
+schema: '2.0'
+stages:
+  prepare:
+    cmd: python src/prepare.py --in data/raw/train.csv --out 
+      data/processed/mini_train.csv --out_val data/processed/mini_val.csv
+    deps:
+    - path: data/raw/train.csv
+      hash: md5
+      md5: be3acd88f3b62b96fb6ea090ba1ab335
+      size: 184175071
+    - path: src/prepare.py
+      hash: md5
+      md5: 958ecb211e2dcbf0ec7faf4802d75138
+      size: 3218
+    outs:
+    - path: data/processed/mini_train.csv
+      hash: md5
+      md5: 90d247f235b2ba1b637a67e081213539
+      size: 2279625
+    - path: data/processed/mini_val.csv
+      hash: md5
+      md5: 9d8d967dbe1d851bef45569e63d07ef7
+      size: 577300
+  train:
+    cmd: "python src/train.py --train_csv data/processed/mini_train.csv --val_csv
+      data/processed/mini_val.csv --skip_cross --fast_ci --max_steps 30 --clf_model_name
+      prajjwal1/bert-tiny --max_length 64 --clf_epochs 1\n"
+    deps:
+    - path: data/processed/mini_train.csv
+      hash: md5
+      md5: 90d247f235b2ba1b637a67e081213539
+      size: 2279625
+    - path: data/processed/mini_val.csv
+      hash: md5
+      md5: 9d8d967dbe1d851bef45569e63d07ef7
+      size: 577300
+    - path: src/train.py
+      hash: md5
+      md5: 4874ed6fd0a5c3dc324904deacd84c69
+      size: 16434
+    outs:
+    - path: metrics/train_metrics.json
+      hash: md5
+      md5: cc670722a4558e08cb886942052434f8
+      size: 77
+    - path: models/transformer_classifier
+      hash: md5
+      md5: 36f766dc0c8c4323d0315aff7f9c60cf.dir
+      size: 18500544
+      nfiles: 8
+  evaluate:
+    cmd: python src/evaluate.py --model_dir models/transformer_classifier 
+      --val_csv data/processed/mini_val.csv --out metrics/scores.json
+    deps:
+    - path: data/processed/mini_val.csv
+      hash: md5
+      md5: 9d8d967dbe1d851bef45569e63d07ef7
+      size: 577300
+    - path: models/transformer_classifier
+      hash: md5
+      md5: 36f766dc0c8c4323d0315aff7f9c60cf.dir
+      size: 18500544
+      nfiles: 8
+    - path: src/evaluate.py
+      hash: md5
+      md5: 53ba8a9d324ac10c75c941cce3c9e162
+      size: 6372
+    outs:
+    - path: metrics/scores.json
+      hash: md5
+      md5: 3c4af90c826944694f6bd09ef36dd229
+      size: 355
+  promote:
+    cmd: python src/promote.py --model_name llm_transformer_classifier 
+      --metric_tag metric_f1 --stage Production
+    deps:
+    - path: src/promote.py
+      hash: md5
+      md5: 2d64562ca5a17afa9878d5c757d6b492
+      size: 3090
+  deepchecks_gate:
+    cmd: "python src/deepchecks_gate.py --model_dir models/transformer_classifier
+      --val_csv data/processed/mini_val.csv --scores metrics/scores.json --out metrics/deepchecks.json
+      --min_f1 0.60\n"
+    deps:
+    - path: data/processed/mini_val.csv
+      hash: md5
+      md5: 9d8d967dbe1d851bef45569e63d07ef7
+      size: 577300
+    - path: metrics/scores.json
+      hash: md5
+      md5: 3c4af90c826944694f6bd09ef36dd229
+      size: 355
+    - path: models/transformer_classifier
+      hash: md5
+      md5: 36f766dc0c8c4323d0315aff7f9c60cf.dir
+      size: 18500544
+      nfiles: 8
+    - path: src/deepchecks_gate.py
+      hash: md5
+      md5: dd096797122695c95bbf94632f838172
+      size: 2222
+    outs:
+    - path: metrics/deepchecks.json
+      hash: md5
+      md5: 2f0dd443a5f31ba8976b30057bc390a2
+      size: 439
+  promote_staging:
+    cmd: python src/promote.py --model_name llm_transformer_classifier 
+      --metric_tag metric_f1 --stage Staging
+    deps:
+    - path: metrics/scores.json
+      hash: md5
+      md5: 3c4af90c826944694f6bd09ef36dd229
+      size: 355
+    - path: src/promote.py
+      hash: md5
+      md5: 600591276117e710345584085d771969
+      size: 5345
+  promote_production:
+    cmd: python src/promote.py --model_name llm_transformer_classifier 
+      --metric_tag metric_f1 --stage Production --archive_old_production
+    deps:
+    - path: metrics/scores.json
+      hash: md5
+      md5: 3c4af90c826944694f6bd09ef36dd229
+      size: 355
+    - path: src/promote.py
+      hash: md5
+      md5: 600591276117e710345584085d771969
+      size: 5345
