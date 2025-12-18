@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import mlflow
+from transformers import AutoTokenizer
 
 
 def build_text(df: pd.DataFrame) -> list[str]:
@@ -60,7 +61,7 @@ def main():
     ap.add_argument("--model_version", default="1")
 
     ap.add_argument("--threshold", type=float, default=0.5)
-
+    ap.add_argument("--max_length", type=int, default=512)
     args = ap.parse_args()
 
     inp = Path(args.input_csv)
@@ -79,8 +80,18 @@ def main():
 
     # We send a "text" column (most convenient for inference)
     model_input = pd.DataFrame({"text": texts})
+    # --- NEW: tokenize truncation (safe for BERT 512 limit) ---
+    tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")  # or the exact base model you used
+    enc = tokenizer(
+        texts,
+        truncation=True,
+        max_length=512,
+        padding=False,
+    )
+# Decode back to truncated text strings
+    texts = tokenizer.batch_decode(enc["input_ids"], skip_special_tokens=True)
+    raw_out = model.predict(pd.DataFrame({"text": texts}))
 
-    raw_out = model.predict(model_input)
     scores = normalize_scores(raw_out, n=len(df))
 
     df["score"] = scores
