@@ -1,5 +1,5 @@
 [core]
-    remote = origin
+    remote = dagshub
 ['remote "dagshub"']
     url = https://dagshub.com/salsabil812/llm_mlops1.dvc
     connect_timeout = 600
