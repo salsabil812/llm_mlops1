@@ -63,15 +63,28 @@ pipeline {
     }
 
     stage('DVC pull') {
-      steps {
-        sh '''
-          set -e
-          . .venv/bin/activate
-          dvc --version
-          dvc pull -v
-        '''
-      }
+    steps {
+        withCredentials([
+            usernamePassword(
+                credentialsId: 'dagshub-creds',
+                usernameVariable: 'DAGSHUB_USERNAME',
+                passwordVariable: 'DAGSHUB_PASSWORD'
+            )
+        ]) {
+            sh '''
+                echo "Credentials loaded"
+
+                source .venv/bin/activate
+
+                export DAGSHUB_USERNAME=$DAGSHUB_USERNAME
+                export DAGSHUB_PASSWORD=$DAGSHUB_PASSWORD
+
+                dvc pull -v
+            '''
+        }
     }
+}
+
 
     stage('Train + Evaluate + Gate + Auto Promote') {
       steps {
