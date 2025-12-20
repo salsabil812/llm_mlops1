@@ -29,41 +29,21 @@ pipeline {
             python3 -m venv .venv
           fi
 
+          # Installer les packages dans le même shell
           . .venv/bin/activate
-          python -m pip install --upgrade pip
+          pip install --upgrade pip
 
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           else
-            pip install dvc mlflow pandas numpy scikit-learn torch transformers sentence-transformers
+            pip install "dvc[s3]" mlflow pandas numpy scikit-learn torch transformers sentence-transformers
           fi
         '''
       }
     }
 
-    stage('Load credentials') {
+    stage('Load credentials & DVC pull') {
       steps {
-        withCredentials([
-          string(credentialsId: 'DAGSHUB_USER', variable: 'DAGSHUB_USER'),
-          string(credentialsId: 'DAGSHUB_TOKEN', variable: 'DAGSHUB_TOKEN')
-        ]) {
-          sh '''
-            set -e
-
-            export MLFLOW_TRACKING_USERNAME="$DAGSHUB_USER"
-            export MLFLOW_TRACKING_PASSWORD="$DAGSHUB_TOKEN"
-
-            export DAGSHUB_USERNAME="$DAGSHUB_USER"
-            export DAGSHUB_PASSWORD="$DAGSHUB_TOKEN"
-
-            echo "✅ Credentials loaded (masked by Jenkins)"
-          '''
-        }
-      }
-    }
-
-    stage('DVC pull') {
-    steps {
         withCredentials([
             usernamePassword(
                 credentialsId: 'dagshub-creds',
@@ -71,28 +51,33 @@ pipeline {
                 passwordVariable: 'DAGSHUB_PASSWORD'
             )
         ]) {
-            sh '''
-                echo "Credentials loaded"
+          sh '''
+            set -e
+            cd $WORKSPACE
+            echo "✅ Credentials loaded"
 
-                source .venv/bin/activate
+            # Activer le venv et exporter les credentials
+            . .venv/bin/activate
+            export DAGSHUB_USERNAME=$DAGSHUB_USERNAME
+            export DAGSHUB_PASSWORD=$DAGSHUB_PASSWORD
+            export MLFLOW_TRACKING_USERNAME=$DAGSHUB_USERNAME
+            export MLFLOW_TRACKING_PASSWORD=$DAGSHUB_PASSWORD
 
-                export DAGSHUB_USERNAME=$DAGSHUB_USERNAME
-                export DAGSHUB_PASSWORD=$DAGSHUB_PASSWORD
-
-                dvc pull -v
-            '''
+            # Pull des données DVC
+            dvc pull -v
+          '''
         }
+      }
     }
-}
-
 
     stage('Train + Evaluate + Gate + Auto Promote') {
       steps {
         sh '''
           set -e
+          cd $WORKSPACE
           . .venv/bin/activate
 
-          # Full pipeline with policy-based promotion
+          # Exécution de la pipeline DVC
           dvc repro -f prepare train evaluate deepchecks_gate promote_auto
         '''
       }
@@ -106,7 +91,6 @@ pipeline {
           echo "---- metrics/scores.json ----"
           cat metrics/scores.json
         fi
-
         if [ -f metrics/deepchecks.json ]; then
           echo "---- metrics/deepchecks.json ----"
           cat metrics/deepchecks.json
