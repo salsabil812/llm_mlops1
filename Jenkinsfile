@@ -29,41 +29,49 @@ pipeline {
                         python3 -m venv .venv
                     fi
 
-                    # Activer le virtualenv
                     . .venv/bin/activate
 
-                    # Upgrade pip
                     python -m pip install --upgrade pip
 
-                    # Installer toutes les dépendances
                     if [ -f requirements.txt ]; then
                         pip install -r requirements.txt
                     else
-                        pip install "dvc[s3]" mlflow pandas numpy scikit-learn torch transformers sentence-transformers
+                        pip install dvc mlflow pandas numpy scikit-learn torch transformers sentence-transformers
                     fi
                 '''
             }
         }
 
-        stage('Load credentials') {
-          steps {
-            withCredentials([
-              string(credentialsId: 'DAGSHUB_USER', variable: 'DAGSHUB_USER'),
-              string(credentialsId: 'DAGSHUB_TOKEN', variable: 'DAGSHUB_TOKEN')
-            ]) {
-              sh '''
-                export MLFLOW_TRACKING_USERNAME=$DAGSHUB_USER
-                export MLFLOW_TRACKING_PASSWORD=$DAGSHUB_TOKEN
-        
-                export DVC_HTTP_USER=$DAGSHUB_USER
-                export DVC_HTTP_PASSWORD=$DAGSHUB_TOKEN
-        
-                echo "Credentials loaded"
-              '''
+        stage('Load credentials (DAGsHub)') {
+            steps {
+                withCredentials([
+                    string(credentialsId: 'DAGSHUB_USER', variable: 'DAGSHUB_USER'),
+                    string(credentialsId: 'DAGSHUB_TOKEN', variable: 'DAGSHUB_TOKEN')
+                ]) {
+                    sh '''
+                        export MLFLOW_TRACKING_USERNAME="$DAGSHUB_USER"
+                        export MLFLOW_TRACKING_PASSWORD="$DAGSHUB_TOKEN"
+
+                        export DVC_HTTP_USER="$DAGSHUB_USER"
+                        export DVC_HTTP_PASSWORD="$DAGSHUB_TOKEN"
+
+                        echo "✅ DAGsHub credentials loaded"
+                    '''
+                }
             }
-          }
         }
 
+        stage('DVC pull') {
+            steps {
+                sh '''
+                    set -e
+                    . .venv/bin/activate
+
+                    dvc --version
+                    dvc pull -v
+                '''
+            }
+        }
 
         stage('Train + Evaluate + Gate + Auto Promote') {
             steps {
@@ -71,7 +79,6 @@ pipeline {
                     set -e
                     . .venv/bin/activate
 
-                    # Exécuter la pipeline DVC complète
                     dvc repro -f prepare train evaluate deepchecks_gate promote_auto
                 '''
             }
