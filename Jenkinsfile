@@ -45,34 +45,25 @@ pipeline {
             }
         }
 
-        stage('Load credentials & DVC pull') {
-            steps {
-                withCredentials([
-                    usernamePassword(
-                        credentialsId: 'dagshub-creds',
-                        usernameVariable: 'DAGSHUB_USERNAME',
-                        passwordVariable: 'DAGSHUB_PASSWORD'
-                    )
-                ]) {
-                    sh '''
-                        set -e
-                        cd $WORKSPACE
-                        . .venv/bin/activate
-
-                        # Export credentials pour DagsHub et MLflow
-                        export DAGSHUB_USERNAME=$DAGSHUB_USERNAME
-                        export DAGSHUB_PASSWORD=$DAGSHUB_PASSWORD
-                        export MLFLOW_TRACKING_USERNAME=$DAGSHUB_USERNAME
-                        export MLFLOW_TRACKING_PASSWORD=$DAGSHUB_PASSWORD
-
-                        echo "✅ Credentials loaded"
-
-                        # Pull des données DVC depuis DagsHub
-                        dvc pull -v
-                    '''
-                }
+        stage('Load credentials') {
+          steps {
+            withCredentials([
+              string(credentialsId: 'DAGSHUB_USER', variable: 'DAGSHUB_USER'),
+              string(credentialsId: 'DAGSHUB_TOKEN', variable: 'DAGSHUB_TOKEN')
+            ]) {
+              sh '''
+                export MLFLOW_TRACKING_USERNAME=$DAGSHUB_USER
+                export MLFLOW_TRACKING_PASSWORD=$DAGSHUB_TOKEN
+        
+                export DVC_HTTP_USER=$DAGSHUB_USER
+                export DVC_HTTP_PASSWORD=$DAGSHUB_TOKEN
+        
+                echo "Credentials loaded"
+              '''
             }
+          }
         }
+
 
         stage('Train + Evaluate + Gate + Auto Promote') {
             steps {
