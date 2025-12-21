@@ -22,6 +22,19 @@ pipeline {
                 '''
             }
         }
+        stage('Clean workspace') {
+              steps {
+                sh '''
+                  set -euo pipefail
+                  # Nettoyer outputs générés par les anciens builds
+                  rm -rf models/transformer_classifier || true
+                  rm -f metrics/train_metrics.json || true
+            
+                  # Optionnel: si tu veux repartir clean à 100%
+                  # dvc checkout -f || true
+                '''
+              }
+            }
 
         stage('Python & venv') {
             steps {
