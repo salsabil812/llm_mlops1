@@ -16,6 +16,10 @@ pipeline {
         stage('Checkout') {
             steps {
                 checkout scm
+                sh '''
+                  set -euo pipefail
+                  git status --porcelain || true
+                '''
             }
         }
 
@@ -50,20 +54,31 @@ pipeline {
                     sh '''
                         set -euo pipefail
                         . .venv/bin/activate
-
                         dvc --version
 
-                        # (Optionnel mais recommandé) cache DVC persistant
-                        # Si ton agent n'est pas persistant, tu peux commenter ces lignes
+                        # ✅ Auth HTTP fiable pour DagsHub (évite 401)
+                        cat > ~/.netrc <<EOF
+machine dagshub.com
+login $DAGSHUB_USER
+password $DAGSHUB_TOKEN
+EOF
+                        chmod 600 ~/.netrc
+
+                        # (Optionnel) cache DVC persistant
                         dvc config cache.dir /var/jenkins_home/dvc-cache
                         mkdir -p /var/jenkins_home/dvc-cache
 
-                        # Auth DVC vers DagsHub (remote = "dagshub" car dvc remote default = dagshub)
+                        # Garder aussi l’auth dans la config DVC (OK)
                         dvc remote modify dagshub user "$DAGSHUB_USER"
                         dvc remote modify dagshub password "$DAGSHUB_TOKEN"
 
-                        # Pull des données/modèles/metrics versionnés par DVC
+                        # Petit test rapide (facultatif)
+                        dvc list . models -R | head -n 20 || true
+
                         dvc pull -v
+
+                        # Vérif
+                        ls -la data/raw/train.csv metrics/scores.json models/transformer_classifier >/dev/null
                     '''
                 }
             }
@@ -79,9 +94,11 @@ pipeline {
                         set -euo pipefail
                         . .venv/bin/activate
 
-                        # Auth MLflow vers DagsHub (si tes scripts loggent sur MLflow)
                         export MLFLOW_TRACKING_USERNAME="$DAGSHUB_USER"
                         export MLFLOW_TRACKING_PASSWORD="$DAGSHUB_TOKEN"
+
+                        # 🔎 Debug utile : voir si git pense que src/*.py sont modifiés
+                        git status --porcelain || true
 
                         dvc repro -f prepare train evaluate deepchecks_gate promote_auto
                     '''
